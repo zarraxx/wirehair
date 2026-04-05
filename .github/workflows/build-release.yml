@@ -5,13 +5,58 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.1.0"
+        required: true
+        type: string
+      publish_pypi:
+        description: "Also publish wheels to PyPI"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
+  meta:
+    name: derive-version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      publish_pypi: ${{ steps.meta.outputs.publish_pypi }}
+
+    steps:
+      - name: Derive version metadata
+        id: meta
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version || '' }}
+          PUBLISH_PYPI_INPUT: ${{ github.event.inputs.publish_pypi || 'false' }}
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            release_tag="${GITHUB_REF_NAME}"
+            publish_pypi="true"
+          else
+            version="${VERSION_INPUT}"
+            if [[ -z "${version}" ]]; then
+              echo "workflow_dispatch requires a version input" >&2
+              exit 1
+            fi
+            release_tag="v${version}"
+            publish_pypi="${PUBLISH_PYPI_INPUT}"
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "publish_pypi=${publish_pypi}" >> "${GITHUB_OUTPUT}"
+
   build:
     name: build-${{ matrix.target }}
+    needs: meta
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -45,17 +90,6 @@ jobs:
           ZIG_VERSION: "0.15.2"
         run: ./wirehair-all-os/install-zig.sh "${RUNNER_TEMP}/zig"
 
-      - name: Derive release version
-        id: version
-        shell: bash
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          else
-            version="0.0.0.dev${GITHUB_RUN_NUMBER}"
-          fi
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-
       - name: Build SDK target
         run: ./wirehair-all-os/build-all.sh ${{ matrix.target }}
 
@@ -67,14 +101,14 @@ jobs:
         run: |
           python wirehair-all-os/build-python-wheel.py \
             --target ${{ matrix.target }} \
-            --version ${{ steps.version.outputs.version }} \
+            --version ${{ needs.meta.outputs.version }} \
             --no-isolation
 
       - name: Package C++ SDK
         run: |
           python wirehair-all-os/package-sdk.py \
             --target ${{ matrix.target }} \
-            --version ${{ steps.version.outputs.version }}
+            --version ${{ needs.meta.outputs.version }}
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -86,8 +120,10 @@ jobs:
 
   publish-release:
     name: publish-release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
+    if: needs.meta.outputs.release_tag != ''
+    needs:
+      - meta
+      - build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -111,18 +147,23 @@ jobs:
             exit 1
           fi
 
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+          release_tag="${{ needs.meta.outputs.release_tag }}"
+
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release upload "${release_tag}" "${assets[@]}" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
-              --title "${GITHUB_REF_NAME}" \
+            gh release create "${release_tag}" "${assets[@]}" \
+              --target "${GITHUB_SHA}" \
+              --title "${release_tag}" \
               --generate-notes
           fi
 
   publish-pypi:
     name: publish-pypi
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
+    if: needs.meta.outputs.publish_pypi == 'true'
+    needs:
+      - meta
+      - build
     runs-on: ubuntu-latest
     env:
       TWINE_USERNAME: __token__
