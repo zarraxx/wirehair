@@ -147,11 +147,13 @@ jobs:
           fi
 
           release_tag="${{ needs.meta.outputs.release_tag }}"
+          repo="${GITHUB_REPOSITORY}"
 
-          if gh release view "${release_tag}" >/dev/null 2>&1; then
-            gh release upload "${release_tag}" "${assets[@]}" --clobber
+          if gh release view "${release_tag}" --repo "${repo}" >/dev/null 2>&1; then
+            gh release upload "${release_tag}" "${assets[@]}" --clobber --repo "${repo}"
           else
             gh release create "${release_tag}" "${assets[@]}" \
+              --repo "${repo}" \
               --target "${GITHUB_SHA}" \
               --title "${release_tag}" \
               --generate-notes
