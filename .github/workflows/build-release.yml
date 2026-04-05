@@ -1,0 +1,147 @@
+name: build-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x64
+          - runner: ubuntu-latest
+            target: linux-aarch64
+          - runner: ubuntu-latest
+            target: windows-x64
+          - runner: macos-latest
+            target: darwin-x64
+          - runner: macos-latest
+            target: darwin-aarch64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python build tooling
+        run: python -m pip install --upgrade pip build setuptools wheel twine
+
+      - name: Install Zig
+        env:
+          ZIG_VERSION: "0.15.2"
+        run: ./wirehair-all-os/install-zig.sh "${RUNNER_TEMP}/zig"
+
+      - name: Derive release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0.dev${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build SDK target
+        run: ./wirehair-all-os/build-all.sh ${{ matrix.target }}
+
+      - name: Run ctypes smoke test when runnable
+        working-directory: wirehair-all-os/out/build/${{ matrix.target }}
+        run: ctest --output-on-failure
+
+      - name: Build Python wheel
+        run: |
+          python wirehair-all-os/build-python-wheel.py \
+            --target ${{ matrix.target }} \
+            --version ${{ steps.version.outputs.version }} \
+            --no-isolation
+
+      - name: Package C++ SDK
+        run: |
+          python wirehair-all-os/package-sdk.py \
+            --target ${{ matrix.target }} \
+            --version ${{ steps.version.outputs.version }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-artifacts
+          path: |
+            wirehair-all-os/out/sdk/*.zip
+            wirehair-all-os/out/wheelhouse/*.whl
+
+  publish-release:
+    name: publish-release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          assets=(artifacts/*.zip artifacts/*.whl)
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "No release assets were produced" >&2
+            exit 1
+          fi
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
+
+  publish-pypi:
+    name: publish-pypi
+    if: github.event_name == 'push' && github.ref_type == 'tag' && secrets.PYPI_API_TOKEN != ''
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Twine
+        run: python -m pip install --upgrade pip twine
+
+      - name: Publish wheels to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload --skip-existing artifacts/*.whl

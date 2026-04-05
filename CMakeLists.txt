@@ -81,7 +81,13 @@ endif()
 add_library(wirehair ${LIB_SOURCE_FILES})
 set_target_properties(wirehair PROPERTIES VERSION 2)
 set_target_properties(wirehair PROPERTIES SOVERSION 2)
+set_target_properties(wirehair PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(wirehair PUBLIC ${PROJECT_SOURCE_DIR}/include)
+
+if(BUILD_SHARED_LIBS)
+    target_compile_definitions(wirehair PRIVATE WIREHAIR_BUILDING WIREHAIR_DLL)
+    target_compile_definitions(wirehair INTERFACE WIREHAIR_DLL)
+endif()
 
 if (BUILD_TESTS)
     add_executable(unit_test ${UNIT_TEST_SOURCE_FILES})
@@ -105,6 +111,7 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS wirehair
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

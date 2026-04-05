@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 #
 # Copyleft (c) 2019 Daniel Norte de Moraes <danielcheagle@gmail.com>.
 #
@@ -15,16 +16,19 @@
 # * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
 # * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+"""Wirehair ctypes helpers and the README round-trip example."""
 
-# An working example in python using the shared lib libwirehair-shared.so .
-# adjust it for your actual lib and remenber you can do much more. Enjoy!!
-
+import argparse
 import ctypes
+import os
+import sys
+from pathlib import Path
+
 
 # Success code
 Wirehair_Success = 0
 
-# More data is needed to decode.  This is normal and does not indicate a failure
+# More data is needed to decode. This is normal and does not indicate a failure
 Wirehair_NeedMore = 1
 
 # Other values are failure codes:
@@ -59,107 +63,300 @@ Wirehair_OOM = 9
 Wirehair_UnsupportedPlatform = 10
 
 WirehairResult_Count = 11  # /* for asserts */
+WirehairResult_Padding = 0x7FFFFFFF  # /* int32_t padding */
 
-WirehairResult_Padding = 0x7fffffff  # /* int32_t padding */
+WIREHAIR_VERSION = 2
+DEFAULT_PACKET_SIZE = 1400
+DEFAULT_MESSAGE_BYTES = 1_000_333
+DEFAULT_LOSS_EVERY = 10
 
-wirehair = ctypes.CDLL("libwirehair-shared.so")  # MSWindows: just remove ".so" part to use DLL
+__all__ = [
+    "DEFAULT_LOSS_EVERY",
+    "DEFAULT_MESSAGE_BYTES",
+    "DEFAULT_PACKET_SIZE",
+    "WIREHAIR_VERSION",
+    "Wirehair_BadDenseSeed",
+    "Wirehair_BadInput_LargeN",
+    "Wirehair_BadInput_SmallN",
+    "Wirehair_BadPeelSeed",
+    "Wirehair_Error",
+    "Wirehair_ExtraInsufficient",
+    "Wirehair_InvalidInput",
+    "Wirehair_NeedMore",
+    "Wirehair_OOM",
+    "Wirehair_Success",
+    "Wirehair_UnsupportedPlatform",
+    "build_demo_message",
+    "configure_api",
+    "load_library",
+    "main",
+    "resolve_library_path",
+    "run_readme_example",
+]
 
-KPacketSize = ctypes.c_int(32)  # this can be extremaly large 1400 or more! :-)
-Message_tmp = b'A working example. this need be minimum o 2*KPacketSize; because this I in filling ' \
-              b'more and more words just' \
-              b'by the sake of filling... :-)  the real data can be and will be different :-) '
 
-Message = (ctypes.c_uint8 * len(Message_tmp)).from_buffer_copy(Message_tmp)
+def _default_library_names():
+    if sys.platform == "win32":
+        return ("wirehair.dll",)
+    if sys.platform == "darwin":
+        return ("libwirehair.dylib", "libwirehair.2.dylib")
+    return ("libwirehair.so", "libwirehair.so.2")
 
-if wirehair.wirehair_init_(2) != Wirehair_Success :
-    # this "2" can change in future wirehair releases. :-)
-    # Just updated when necessary.
-    print("Wirehair_Init() failed! exiting.")
-    exit()
 
-encoder = wirehair.wirehair_encoder_create(0, ctypes.byref(Message),
-                                           ctypes.c_uint64(len(Message)),
-                                           ctypes.c_uint32(KPacketSize.value))
+def _candidate_library_paths(explicit_path=None):
+    if explicit_path:
+        yield Path(explicit_path).expanduser()
 
-if encoder == 0:
-    print("Creation of encoder failed! exiting.")
-    exit()
+    env_path = os.environ.get("WIREHAIR_LIB_PATH")
+    if env_path:
+        yield Path(env_path).expanduser()
 
-decoder = wirehair.wirehair_decoder_create(0,
-                                           ctypes.c_uint64(len(Message)),
-                                           ctypes.c_uint32(KPacketSize.value))
-
-if decoder == 0:
-    print("Creation of encoder failed! exiting.")
-    wirehair.wirehair_free(encoder)
-    exit()
-
-blockid = ctypes.c_uint(0)
-needed = ctypes.c_uint(0)
-
-while True:
-
-    blockid.value += 1
-
-    # simulate 10% packet loss
-    if (blockid.value % 10) == 0:
-        continue
-
-    needed.value += 1
-    block = (ctypes.c_uint8 * KPacketSize.value)()
-    # ? They are real need to redefining it always in loop ??
-    # ? Will speedup define it before the while loop, just one time?
-
-    # Encode a packet
-    writelen = ctypes.c_uint32(0)
-    encodedResult = wirehair.wirehair_encode(encoder, #encoder object
-                                            ctypes.c_uint(blockid.value), #ID of block to generate
-                                            ctypes.byref(block), #output buffer
-                                            ctypes.c_uint32(KPacketSize.value), #output buffer size
-                                            ctypes.byref(writelen)) # returned block length
-
-    if encodedResult != Wirehair_Success:
-        print("Wirehair_encode failed! exiting.")
-        exit()
-
-    decodeResult = wirehair.wirehair_decode(
-        decoder,  # Decoder Object
-        ctypes.c_uint(blockid.value),  # ID of block that was encoded
-        ctypes.byref(block),  # input buffer
-        writelen  # Block length
+    module_dir = Path(__file__).resolve().parent
+    search_dirs = (
+        module_dir,
+        module_dir / "_native",
+        module_dir / "lib",
+        module_dir / "bin",
+        module_dir.parent / "lib",
+        module_dir.parent / "bin",
     )
 
-    if decodeResult == Wirehair_Success:
-        # Decoder has enough data to recover now
-        break
+    for base_dir in search_dirs:
+        for lib_name in _default_library_names():
+            yield base_dir / lib_name
 
-    if decodeResult != Wirehair_NeedMore:
-        print("Wirehair_decode failed: ", decodeResult, " \n")
 
-decoded = (ctypes.c_uint8 * len(Message))()
+def resolve_library_path(explicit_path=None):
+    checked = []
+    seen = set()
 
-# recover original data on decoder side
-decodeResult = wirehair.wirehair_recover(
-    decoder,
-    ctypes.byref(decoded),
-    ctypes.c_uint64(len(Message))
-)
+    for candidate in _candidate_library_paths(explicit_path):
+        candidate = candidate.resolve(strict=False)
+        candidate_key = str(candidate)
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
+        checked.append(candidate)
+        if candidate.is_file():
+            return candidate
 
-if decodeResult != 0:
-    print("Wirehair_recover failed! exiting.")
-    exit()
+    search_hint = "\n".join(f"  - {path}" for path in checked)
+    raise FileNotFoundError(
+        "Unable to find a wirehair shared library. Checked:\n"
+        f"{search_hint}"
+    )
 
-if decoded[:] == Message[:]:
-    print("msgs are equal")
 
-# just more for fun
-eita = (ctypes.c_byte * len(Message)).from_buffer_copy(bytearray(decoded[:]))
-print(str(eita, "ascii"))
+def configure_api(lib):
+    lib.wirehair_init_.argtypes = [ctypes.c_int]
+    lib.wirehair_init_.restype = ctypes.c_int
 
-wirehair.wirehair_free(encoder) ## ? are need to "free" from python? maybe not. :-)
-wirehair.wirehair_free(decoder) ## fixme if necessary: if "wirehair.wirehair_free()" are causing trouble, remove they.
+    lib.wirehair_encoder_create.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint64,
+        ctypes.c_uint32,
+    ]
+    lib.wirehair_encoder_create.restype = ctypes.c_void_p
 
-#  Obs.: tested in Linux Ubuntu Disco Jingo, gcc-8.3 and python 3.7.2+
-#  in 19 march 2019
+    lib.wirehair_encode.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    lib.wirehair_encode.restype = ctypes.c_int
 
-# Enjoy!! :-)
+    lib.wirehair_decoder_create.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint64,
+        ctypes.c_uint32,
+    ]
+    lib.wirehair_decoder_create.restype = ctypes.c_void_p
+
+    lib.wirehair_decode.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    lib.wirehair_decode.restype = ctypes.c_int
+
+    lib.wirehair_recover.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint64,
+    ]
+    lib.wirehair_recover.restype = ctypes.c_int
+
+    lib.wirehair_free.argtypes = [ctypes.c_void_p]
+    lib.wirehair_free.restype = None
+
+
+def load_library(lib_path=None):
+    resolved_path = resolve_library_path(lib_path)
+    lib = ctypes.CDLL(str(resolved_path))
+    configure_api(lib)
+    return lib, resolved_path
+
+
+def build_demo_message(message_bytes=DEFAULT_MESSAGE_BYTES):
+    pattern = b"wirehair-ctypes-readme-example:"
+    repeats = (message_bytes // len(pattern)) + 1
+    return (pattern * repeats)[:message_bytes]
+
+
+def run_readme_example(
+    lib_path=None,
+    packet_size=DEFAULT_PACKET_SIZE,
+    message_bytes=DEFAULT_MESSAGE_BYTES,
+    loss_every=DEFAULT_LOSS_EVERY,
+):
+    lib, resolved_path = load_library(lib_path)
+
+    init_result = lib.wirehair_init_(WIREHAIR_VERSION)
+    if init_result != Wirehair_Success:
+        raise RuntimeError(f"wirehair_init_ failed: {init_result}")
+
+    message = build_demo_message(message_bytes)
+    message_buf = ctypes.create_string_buffer(message)
+
+    encoder = lib.wirehair_encoder_create(
+        None,
+        ctypes.cast(message_buf, ctypes.c_void_p),
+        ctypes.c_uint64(len(message)),
+        ctypes.c_uint32(packet_size),
+    )
+    if not encoder:
+        raise RuntimeError("wirehair_encoder_create failed")
+
+    decoder = lib.wirehair_decoder_create(
+        None,
+        ctypes.c_uint64(len(message)),
+        ctypes.c_uint32(packet_size),
+    )
+    if not decoder:
+        lib.wirehair_free(encoder)
+        raise RuntimeError("wirehair_decoder_create failed")
+
+    try:
+        block_id = 0
+        needed = 0
+
+        while True:
+            block_id += 1
+
+            if loss_every > 0 and (block_id % loss_every) == 0:
+                continue
+
+            needed += 1
+            block = ctypes.create_string_buffer(packet_size)
+            write_len = ctypes.c_uint32(0)
+
+            encode_result = lib.wirehair_encode(
+                encoder,
+                ctypes.c_uint(block_id),
+                ctypes.cast(block, ctypes.c_void_p),
+                ctypes.c_uint32(packet_size),
+                ctypes.byref(write_len),
+            )
+            if encode_result != Wirehair_Success:
+                raise RuntimeError(f"wirehair_encode failed: {encode_result}")
+
+            decode_result = lib.wirehair_decode(
+                decoder,
+                ctypes.c_uint(block_id),
+                ctypes.cast(block, ctypes.c_void_p),
+                write_len,
+            )
+            if decode_result == Wirehair_Success:
+                break
+            if decode_result != Wirehair_NeedMore:
+                raise RuntimeError(f"wirehair_decode failed: {decode_result}")
+
+            if needed > 4096:
+                raise RuntimeError(
+                    "decoder did not converge in a reasonable number of packets"
+                )
+
+        decoded = ctypes.create_string_buffer(len(message))
+        recover_result = lib.wirehair_recover(
+            decoder,
+            ctypes.cast(decoded, ctypes.c_void_p),
+            ctypes.c_uint64(len(message)),
+        )
+        if recover_result != Wirehair_Success:
+            raise RuntimeError(f"wirehair_recover failed: {recover_result}")
+
+        if decoded.raw != message:
+            raise RuntimeError("decoded payload does not match the original input")
+    finally:
+        lib.wirehair_free(encoder)
+        lib.wirehair_free(decoder)
+
+    return {
+        "library_path": resolved_path,
+        "message_bytes": len(message),
+        "packet_size": packet_size,
+        "packets_needed": needed,
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Run the Wirehair README example through Python ctypes."
+    )
+    parser.add_argument("--lib", help="Path to the shared library to load")
+    parser.add_argument(
+        "--packet-size",
+        type=int,
+        default=DEFAULT_PACKET_SIZE,
+        help=f"Packet size to use during the example (default: {DEFAULT_PACKET_SIZE})",
+    )
+    parser.add_argument(
+        "--message-bytes",
+        type=int,
+        default=DEFAULT_MESSAGE_BYTES,
+        help=(
+            "Message size to use during the example "
+            f"(default: {DEFAULT_MESSAGE_BYTES})"
+        ),
+    )
+    parser.add_argument(
+        "--loss-every",
+        type=int,
+        default=DEFAULT_LOSS_EVERY,
+        help=(
+            "Simulate packet loss by dropping every Nth packet "
+            f"(default: {DEFAULT_LOSS_EVERY})"
+        ),
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Only report failures",
+    )
+    args = parser.parse_args(argv)
+
+    result = run_readme_example(
+        lib_path=args.lib,
+        packet_size=args.packet_size,
+        message_bytes=args.message_bytes,
+        loss_every=args.loss_every,
+    )
+
+    if not args.quiet:
+        print(
+            "Wirehair README example passed "
+            f"using {result['library_path']} "
+            f"(message={result['message_bytes']} bytes, "
+            f"packet_size={result['packet_size']}, "
+            f"packets_needed={result['packets_needed']})"
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

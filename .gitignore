@@ -61,3 +61,7 @@ Temporary Items
 
 #Build cmake dir
 build
+
+# Python cache
+__pycache__/
+*.pyc
