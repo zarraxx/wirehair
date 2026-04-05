@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, for example 0.1.0"
-        required: true
+        description: "Release version. Leave empty to default to yyyyMMdd."
+        required: false
         type: string
       publish_pypi:
         description: "Also publish wheels to PyPI"
@@ -43,8 +43,7 @@ jobs:
           else
             version="${VERSION_INPUT}"
             if [[ -z "${version}" ]]; then
-              echo "workflow_dispatch requires a version input" >&2
-              exit 1
+              version="$(date -u +%Y%m%d)"
             fi
             release_tag="v${version}"
             publish_pypi="${PUBLISH_PYPI_INPUT}"
