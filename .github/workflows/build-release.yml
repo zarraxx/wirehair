@@ -121,9 +121,12 @@ jobs:
 
   publish-pypi:
     name: publish-pypi
-    if: github.event_name == 'push' && github.ref_type == 'tag' && secrets.PYPI_API_TOKEN != ''
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
+    env:
+      TWINE_USERNAME: __token__
+      TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
     steps:
       - name: Download artifacts
@@ -140,8 +143,10 @@ jobs:
       - name: Install Twine
         run: python -m pip install --upgrade pip twine
 
+      - name: Skip PyPI publish when token is missing
+        if: env.TWINE_PASSWORD == ''
+        run: echo "PYPI_API_TOKEN is not configured; skipping PyPI publish."
+
       - name: Publish wheels to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        if: env.TWINE_PASSWORD != ''
         run: python -m twine upload --skip-existing artifacts/*.whl
