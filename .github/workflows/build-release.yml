@@ -140,10 +140,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          shopt -s nullglob
-          assets=(artifacts/*.zip artifacts/*.whl)
+          mapfile -t assets < <(find artifacts -type f \( -name '*.zip' -o -name '*.whl' \) | sort)
           if [[ ${#assets[@]} -eq 0 ]]; then
             echo "No release assets were produced" >&2
+            find artifacts -maxdepth 5 -type f | sort || true
             exit 1
           fi
 
@@ -190,4 +190,12 @@ jobs:
 
       - name: Publish wheels to PyPI
         if: env.TWINE_PASSWORD != ''
-        run: python -m twine upload --skip-existing artifacts/*.whl
+        shell: bash
+        run: |
+          mapfile -t wheels < <(find artifacts -type f -name '*.whl' | sort)
+          if [[ ${#wheels[@]} -eq 0 ]]; then
+            echo "No wheel files were produced" >&2
+            find artifacts -maxdepth 5 -type f | sort || true
+            exit 1
+          fi
+          python -m twine upload --skip-existing "${wheels[@]}"
